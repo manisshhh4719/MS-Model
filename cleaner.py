@@ -60,6 +60,8 @@ def get_urban_rural(region_name):
 
 def get_state_name(region_name):
     """Extract clean state name without U/R suffix."""
+    if region_name in ["All India Urban", "All India Rural"]:
+        return "All India"
     name = region_name
     for suffix in [" (U+R)", " (U)", " (R)", "(U+R)", "(U)", "(R)"]:
         name = name.replace(suffix, "")
@@ -194,22 +196,55 @@ def process_single_sheet(data, sheet_name, category):
 
 def add_ur_rollup(master_df):
     """
-    Create U+R rows by summing U and R rows for same State + TG_Segment + 
+    Create U+R rows by summing ONLY additive raw base metrics (HH, Vol, Val,
+    Avg Cons, Avg FOP, Avg POC) from U and R rows for the same State + TG_Segment +
     Flag + Format + Brand_SKU_Item + Category.
-    U+R Individual Factor = (U Factor + R Factor) / 2
+
+    IMPORTANT: Avg NOP, Avg PPU, Units, Units Estd, Sales Derived, Value MS%,
+    Units MS%, Variance and Individual_Factor are NOT summed here because they
+    are ratios/derived values, not additive quantities. They must be
+    recalculated fresh on the combined U/R/U+R dataset AFTER this rollup runs
+    (see add_calculations in calculator.py, which calls this function first,
+    then runs add_calculations_core on the result).
+
+    U+R Individual Factor = (U Factor + R Factor) / 2, set separately.
     """
-    # Get all numeric columns (metric columns)
     id_cols = ["Category", "Region", "State", "Zone", "Urban_Rural",
                "TG_Segment", "Flag", "Format", "Grammage", "SU",
                "Brand_Name", "Brand_SKU_Item"]
-    numeric_cols = [c for c in master_df.columns if c not in id_cols]
 
-    # Group by state level identifiers
+    # Only these raw metrics are safe to sum directly (they are true counts/totals)
+    ADDITIVE_METRIC_PREFIXES = ["HH__", "Vol__", "Val__", "Avg Cons__", "Avg FOP__", "Avg POC__"]
+    additive_cols = [c for c in master_df.columns
+                      if any(c.startswith(p) for p in ADDITIVE_METRIC_PREFIXES)]
+
+    # Avg NOP is a weighted average, not additive -- approximate via HH-weighted average
+    nop_cols = [c for c in master_df.columns if c.startswith("Avg NOP__")]
+
     group_cols = ["Category", "State", "TG_Segment", "Flag",
                   "Format", "Grammage", "SU", "Brand_Name", "Brand_SKU_Item"]
 
-    # Sum U and R rows for each group
-    ur_rows = master_df.groupby(group_cols)[numeric_cols].sum().reset_index()
+    # Sum the truly additive columns
+    ur_rows = master_df.groupby(group_cols)[additive_cols].sum().reset_index()
+
+    # HH-weighted average for Avg NOP per period (so Units = HH*NOP stays consistent)
+    for nop_col in nop_cols:
+        period = nop_col.replace("Avg NOP__", "")
+        hh_col = f"HH__{period}"
+        if hh_col not in master_df.columns:
+            continue
+        tmp = master_df[group_cols + [hh_col, nop_col]].copy()
+        tmp["_weighted"] = tmp[hh_col] * tmp[nop_col]
+        agg = tmp.groupby(group_cols).agg(
+            _hh_sum=(hh_col, "sum"),
+            _weighted_sum=("_weighted", "sum")
+        ).reset_index()
+        agg[nop_col] = np.where(
+            agg["_hh_sum"] != 0,
+            agg["_weighted_sum"] / agg["_hh_sum"],
+            0
+        ).round(2)
+        ur_rows = ur_rows.merge(agg[group_cols + [nop_col]], on=group_cols, how="left")
 
     # Add U+R identifier columns
     ur_rows["Urban_Rural"] = "U+R"
@@ -226,8 +261,11 @@ def add_ur_rollup(master_df):
         ur_factors = ((u_factors + r_factors) / 2).fillna(1.0)
         ur_rows["Individual_Factor"] = ur_rows["State"].map(ur_factors).fillna(1.0)
 
-    # Combine original + U+R rows
-    combined = pd.concat([master_df, ur_rows], ignore_index=True)
+    # Combine original U/R rows (raw base metrics only) + new U+R rows
+    base_cols = id_cols + additive_cols + nop_cols + (["Individual_Factor"] if "Individual_Factor" in master_df.columns else [])
+    base_cols = [c for c in base_cols if c in master_df.columns]
+
+    combined = pd.concat([master_df[base_cols], ur_rows[base_cols]], ignore_index=True)
     combined = combined.sort_values(
         ["Category", "State", "Urban_Rural", "TG_Segment", "Flag", "Brand_SKU_Item"]
     ).reset_index(drop=True)

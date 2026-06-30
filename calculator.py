@@ -56,23 +56,32 @@ def get_hh_periods(df):
 
 def add_calculations(df, factor_dict):
     """
-    Add all calculations:
-    1. Individual Factor lookup per region
-    2. Avg PPU = (Val * 1000) / (HH * Individual Factor)
-    3. Units (for variance) = HH * Avg NOP  [at both SKU and Brand level]
-    4. Units Estd = HH * Individual Factor * 1000
-    5. Sales Derived = Units Estd * Avg PPU
-    6. Brand_Units_Variance = Brand Units - Sum of SKU Units under that brand
-    7. Value MS% and Units MS%
+    Pipeline order (IMPORTANT - this order fixes the double-counting bug):
+    1. Individual Factor lookup per region (needed before rollup, for U+R avg)
+    2. Roll up U+R rows from U and R, summing ONLY raw additive metrics
+       (HH, Vol, Val, Avg Cons, Avg FOP, Avg POC) and HH-weighted-averaging
+       Avg NOP. This must happen BEFORE any derived calculation, otherwise
+       ratio columns like MS% get summed instead of recalculated, causing
+       totals like 200% instead of 100%.
+    3. On the combined U/R/U+R dataset, calculate:
+       - Avg PPU = (Val * 1000) / (HH * Individual Factor)
+       - Units = HH * Avg NOP (for variance)
+       - Units Estd = HH * Individual Factor * 1000
+       - Sales Derived = Units Estd * Avg PPU
+    4. Variance = Brand Units - Sum of SKU Units under that brand
+    5. Value MS% and Units MS% = Brand / Category * 100 (recalculated fresh,
+       so U+R Category row is always exactly 100%, never doubled)
     """
+    from cleaner import add_ur_rollup
 
-    # Build complete factor lookup including U+R
+    # Step 1: Individual Factor lookup (needed for U+R averaging in rollup)
     full_factor_dict = get_full_factor_dict(factor_dict)
-
-    # Add Individual Factor per region
     df["Individual_Factor"] = df["Region"].map(full_factor_dict).fillna(1.0)
 
-    # Get all time periods
+    # Step 2: Roll up U+R rows BEFORE any derived/ratio calculation
+    df = add_ur_rollup(df)
+
+    # Step 3: Calculate Avg PPU, Units, Units Estd, Sales Derived fresh on combined data
     hh_periods = get_hh_periods(df)
 
     for period in hh_periods:
@@ -107,15 +116,11 @@ def add_calculations(df, factor_dict):
             df[f"Units Estd__{period}"] * df[f"Avg PPU__{period}"]
         ).round(2)
 
-    # Add variance calculation
+    # Step 4: Variance (calculated fresh, after rollup)
     df = add_variance(df, hh_periods)
 
-    # Add MS% calculations
+    # Step 5: Market Share % (calculated fresh, after rollup -- this is the fix)
     df = add_market_share(df, hh_periods)
-
-    # Add U+R rollup rows
-    from cleaner import add_ur_rollup
-    df = add_ur_rollup(df)
 
     return df
 
