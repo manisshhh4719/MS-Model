@@ -64,9 +64,9 @@ def add_calculations(df, factor_dict):
        ratio columns like MS% get summed instead of recalculated, causing
        totals like 200% instead of 100%.
     3. On the combined U/R/U+R dataset, calculate:
-       - Avg PPU = (Val * 1000) / (HH * Individual Factor)
+       - Avg PPU = (Val * 1000) / (HH * Avg NOP)
        - Units = HH * Avg NOP (for variance)
-       - Units Estd = HH * Individual Factor * 1000
+       - Units Estd (Sales Units) = HH * Individual Factor * Avg NOP * 1000
        - Sales Derived = Units Estd * Avg PPU
     4. Variance = Brand Units - Sum of SKU Units under that brand
     5. Value MS% and Units MS% = Brand / Category * 100 (recalculated fresh,
@@ -100,16 +100,16 @@ def add_calculations(df, factor_dict):
         # Units = HH * Avg NOP (for variance calculation at both SKU and Brand level)
         df[f"Units__{period}"] = (hh * nop).round(2)
 
-        # Avg PPU = (Val * 1000) / (HH * Individual Factor)
-        denominator = hh * factor
+        # Avg PPU = (Val * 1000) / (HH * Avg NOP)
+        denominator_ppu = hh * nop
         df[f"Avg PPU__{period}"] = np.where(
-            denominator != 0,
-            (val * 1000) / denominator,
+            denominator_ppu != 0,
+            (val * 1000) / denominator_ppu,
             0
         ).round(2)
 
-        # Units Estd = HH * Individual Factor * 1000
-        df[f"Units Estd__{period}"] = (hh * factor * 1000).round(2)
+        # Units Estd (Sales Units) = HH * Individual Factor * Avg NOP * 1000
+        df[f"Units Estd__{period}"] = (hh * factor * nop * 1000).round(2)
 
         # Sales Derived = Units Estd * Avg PPU
         df[f"Sales Derived__{period}"] = (
