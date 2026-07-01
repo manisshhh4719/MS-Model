@@ -1,10 +1,14 @@
 import pandas as pd
 import numpy as np
 
-# Default Individual Factor - only U and R regions (as confirmed)
+# ─── INDIVIDUAL FACTOR ────────────────────────────────────────────────────────
+# Only state-level U and R regions have Individual Factors
+# U+R, Zone, and All India levels do NOT have their own IF
+# Their Sales Derived = sum of state U and R Sales Derived (handled by pivot)
+
 DEFAULT_INDIVIDUAL_FACTOR = {
     "All India Urban": 1.50, "All India Rural": 1.80,
-    "Delhi (U)": 0.00,
+    "Delhi (U)": 0.00, "Delhi (R)": 1.00,
     "Punjab_Haryana (U)": 1.00, "Punjab_Haryana (R)": 1.90,
     "Rajasthan (U)": 1.32, "Rajasthan (R)": 1.24,
     "Uttar Pradesh (U)": 2.10, "Uttar Pradesh (R)": 1.87,
@@ -12,7 +16,6 @@ DEFAULT_INDIVIDUAL_FACTOR = {
     "Bihar excl Jharkhand (U)": 1.00, "Bihar excl Jharkhand (R)": 1.00,
     "Jharkhand (U)": 1.00, "Jharkhand (R)": 1.00,
     "Guwahati (U)": 1.00, "Guwahati (R)": 1.00,
-    "Delhi (R)": 1.00,
     "Orissa (U)": 1.00, "Orissa (R)": 1.70,
     "Maharashtra (U)": 1.85, "Maharashtra (R)": 1.85,
     "Gujarat (U)": 1.90, "Gujarat (R)": 1.85,
@@ -25,63 +28,38 @@ DEFAULT_INDIVIDUAL_FACTOR = {
     "Telangana (U)": 1.00, "Telangana (R)": 1.63,
 }
 
-def compute_ur_factors(factor_dict):
-    """Calculate U+R Individual Factor as simple average of U and R."""
-    ur_factors = {}
-    states = set()
-    for region in factor_dict:
-        state = region.replace(" (U)", "").replace(" (R)", "").strip()
-        states.add(state)
-    for state in states:
-        u_val = factor_dict.get(f"{state} (U)")
-        r_val = factor_dict.get(f"{state} (R)")
-        if u_val is not None and r_val is not None:
-            ur_factors[f"{state} (U+R)"] = round((u_val + r_val) / 2, 2)
-        elif u_val is not None:
-            ur_factors[f"{state} (U+R)"] = u_val
-        elif r_val is not None:
-            ur_factors[f"{state} (U+R)"] = r_val
-    return ur_factors
-
-def get_full_factor_dict(factor_dict):
-    """Build complete factor dict including U+R."""
-    full_dict = dict(factor_dict)
-    ur_factors = compute_ur_factors(factor_dict)
-    full_dict.update(ur_factors)
-    return full_dict
-
 def get_hh_periods(df):
     """Get all time periods from HH columns."""
     return [col.replace("HH__", "") for col in df.columns if col.startswith("HH__")]
 
 def add_calculations(df, factor_dict):
     """
-    Pipeline order (IMPORTANT - this order fixes the double-counting bug):
-    1. Individual Factor lookup per region (needed before rollup, for U+R avg)
-    2. Roll up U+R rows from U and R, summing ONLY raw additive metrics
-       (HH, Vol, Val, Avg Cons, Avg FOP, Avg POC) and HH-weighted-averaging
-       Avg NOP. This must happen BEFORE any derived calculation, otherwise
-       ratio columns like MS% get summed instead of recalculated, causing
-       totals like 200% instead of 100%.
-    3. On the combined U/R/U+R dataset, calculate:
-       - Avg PPU = (Val * 1000) / (HH * Avg NOP)
-       - Units = HH * Avg NOP (for variance)
-       - Units Estd (Sales Units) = HH * Individual Factor * Avg NOP * 1000
-       - Sales Derived = Units Estd * Avg PPU
-    4. Variance = Brand Units - Sum of SKU Units under that brand
-    5. Value MS% and Units MS% = Brand / Category * 100 (recalculated fresh,
-       so U+R Category row is always exactly 100%, never doubled)
+    Calculate Avg PPU, Units Estd, Sales Derived, Variance and MS%
+    directly for every row at every level (State U/R, Zone U+R, All India U+R).
+
+    Key principle (per Sagar):
+    - Individual Factor only applies at state U and R level
+    - For U+R, Zone, All India: IF=1 (no adjustment needed since their raw
+      HH/Val/NOP already reflect the correct aggregate survey values)
+    - Sales Derived = Val * IF * 1,000,000
+    - U+R totals come directly from raw U+R sheets (not rolled up by us)
+
+    Formulas:
+    - Avg PPU = (Val * 1000) / (HH * Avg NOP)
+    - Units Estd = HH * IF * Avg NOP * 1000
+    - Sales Derived = Units Estd * Avg PPU = Val * IF * 1,000,000
+    - Value MS% = Brand Sales Derived / Category Sales Derived * 100
+    - Units MS% = Brand Units Estd / Category Units Estd * 100
+    - Variance = Brand Units Estd - Sum of Sub-brand Units Estd
     """
-    from cleaner import add_ur_rollup
 
-    # Step 1: Individual Factor lookup (needed for U+R averaging in rollup)
-    full_factor_dict = get_full_factor_dict(factor_dict)
-    df["Individual_Factor"] = df["Region"].map(full_factor_dict).fillna(1.0)
+    # Assign Individual Factor per region
+    # U+R, Zone, All India rows get IF=1 (their raw data is already correct)
+    def get_if(region):
+        return factor_dict.get(region, 1.0)
 
-    # Step 2: Roll up U+R rows BEFORE any derived/ratio calculation
-    df = add_ur_rollup(df)
+    df["Individual_Factor"] = df["Region"].apply(get_if)
 
-    # Step 3: Calculate Avg PPU, Units, Units Estd, Sales Derived fresh on combined data
     hh_periods = get_hh_periods(df)
 
     for period in hh_periods:
@@ -97,66 +75,60 @@ def add_calculations(df, factor_dict):
         nop = pd.to_numeric(df[nop_col], errors="coerce").fillna(0) if nop_col in df.columns else pd.Series(0, index=df.index)
         factor = df["Individual_Factor"]
 
-        # Units = HH * Avg NOP (for variance calculation at both SKU and Brand level)
+        # Units = HH * Avg NOP (for variance)
         df[f"Units__{period}"] = (hh * nop).round(2)
 
         # Avg PPU = (Val * 1000) / (HH * Avg NOP)
-        denominator_ppu = hh * nop
+        denom_ppu = hh * nop
         df[f"Avg PPU__{period}"] = np.where(
-            denominator_ppu != 0,
-            (val * 1000) / denominator_ppu,
+            denom_ppu != 0,
+            (val * 1000) / denom_ppu,
             0
         ).round(2)
 
-        # Units Estd (Sales Units) = HH * Individual Factor * Avg NOP * 1000
+        # Units Estd = HH * IF * Avg NOP * 1000
         df[f"Units Estd__{period}"] = (hh * factor * nop * 1000).round(2)
 
-        # Sales Derived = Units Estd * Avg PPU
+        # Sales Derived = Units Estd * Avg PPU = Val * IF * 1,000,000
         df[f"Sales Derived__{period}"] = (
             df[f"Units Estd__{period}"] * df[f"Avg PPU__{period}"]
         ).round(2)
 
-    # Step 4: Variance (calculated fresh, after rollup)
+    # Variance and MS% only meaningful at State level
+    # but we calculate for all levels so pivot works at any level
     df = add_variance(df, hh_periods)
-
-    # Step 5: Market Share % (calculated fresh, after rollup -- this is the fix)
     df = add_market_share(df, hh_periods)
 
     return df
 
 def add_variance(df, periods):
     """
-    Variance = Brand Units - Sum of SKU Units under that brand.
-    Brand Units = HH * Avg NOP at brand level
-    Sum of SKU Units = sum of HH * Avg NOP for all SKUs under that brand
+    Variance = Brand Units Estd - Sum of Sub-brand Units Estd under that brand.
+    Calculated within each Region + TG_Segment + Format group.
     """
-    group_cols = ["Category", "Region", "TG_Segment", "Format", "Brand_Name", "Urban_Rural"]
+    group_cols = ["Category", "Region", "TG_Segment", "Format", "Brand_Name", "Urban_Rural", "Level"]
+    group_cols = [c for c in group_cols if c in df.columns]
 
     for period in periods:
-        units_col = f"Units__{period}"
+        units_col = f"Units Estd__{period}"
         if units_col not in df.columns:
             continue
 
-        # Sum SKU units per brand group
-        sku_rows = df[df["Flag"] == "Sub-brand"].copy()
-        if sku_rows.empty:
+        sub_rows = df[df["Flag"] == "Sub-brand"].copy()
+        if sub_rows.empty:
             df[f"Variance__{period}"] = 0
             continue
 
-        sku_sum = sku_rows.groupby(group_cols)[units_col].sum().reset_index()
-        sku_sum = sku_sum.rename(columns={units_col: f"SKU_Sum_Units__{period}"})
+        sku_sum = sub_rows.groupby(group_cols)[units_col].sum().reset_index()
+        sku_sum = sku_sum.rename(columns={units_col: f"SKU_Sum__{period}"})
 
-        # Merge SKU sum back to brand rows
         df = df.merge(sku_sum, on=group_cols, how="left")
-
-        # Variance = Brand Units - Sum of SKU Units (only meaningful at Brand level)
         df[f"Variance__{period}"] = np.where(
             df["Flag"] == "Brand",
-            df[units_col] - df[f"SKU_Sum_Units__{period}"].fillna(0),
+            df[units_col] - df[f"SKU_Sum__{period}"].fillna(0),
             0
         ).round(2)
-
-        df = df.drop(columns=[f"SKU_Sum_Units__{period}"])
+        df = df.drop(columns=[f"SKU_Sum__{period}"])
 
     return df
 
@@ -164,9 +136,10 @@ def add_market_share(df, periods):
     """
     Value MS% = Brand Sales Derived / Category Sales Derived * 100
     Units MS% = Brand Units Estd / Category Units Estd * 100
-    For U+R: denominator = sum of U and R category rows
+    Calculated within each Region + TG_Segment + Format group.
     """
     group_cols = ["Category", "Region", "TG_Segment", "Format", "Urban_Rural"]
+    group_cols = [c for c in group_cols if c in df.columns]
 
     for period in periods:
         sales_col = f"Sales Derived__{period}"
@@ -175,7 +148,6 @@ def add_market_share(df, periods):
         if sales_col not in df.columns:
             continue
 
-        # Get category total for each group
         cat_rows = df[df["Flag"] == "Category"].copy()
         if cat_rows.empty:
             continue
@@ -189,14 +161,12 @@ def add_market_share(df, periods):
         df = df.merge(cat_sales, on=group_cols, how="left")
         df = df.merge(cat_units, on=group_cols, how="left")
 
-        # Value MS%
         df[f"Value MS%__{period}"] = np.where(
             df[f"Cat_Sales__{period}"].fillna(0) != 0,
             (df[sales_col] / df[f"Cat_Sales__{period}"]) * 100,
             0
         ).round(2)
 
-        # Units MS%
         df[f"Units MS%__{period}"] = np.where(
             df[f"Cat_Units__{period}"].fillna(0) != 0,
             (df[units_col] / df[f"Cat_Units__{period}"]) * 100,
