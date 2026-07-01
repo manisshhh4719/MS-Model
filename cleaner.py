@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from company_mapping import get_company_name
 
 # Zone to State mapping (only U and R sheets, no U+R in raw data)
 ZONE_MAPPING = {
@@ -99,7 +100,7 @@ def get_category_from_filename(filename):
     else:
         return name
 
-def process_single_sheet(data, sheet_name, category):
+def process_single_sheet(data, sheet_name, category, extra_mapping=None, extra_keywords=None):
     """Process one sheet and return cleaned rows."""
     rows = []
 
@@ -153,12 +154,13 @@ def process_single_sheet(data, sheet_name, category):
             # Determine flag
             flag = get_flag(product)
 
-            # Track current brand for sub-brand rows
+            # Track current brand using company mapping
             if flag == "Brand":
-                brand_clean = product
-                for prefix in ["[HCEXL] ", "[HEXLI] ", "[COLOR] "]:
-                    brand_clean = brand_clean.replace(prefix, "")
-                current_brand = brand_clean.strip()
+                current_brand = get_company_name(
+                    product,
+                    extra_mapping=extra_mapping,
+                    extra_keywords=extra_keywords
+                )
             elif flag == "Category":
                 current_brand = "All Brands"
 
@@ -272,7 +274,7 @@ def add_ur_rollup(master_df):
 
     return combined
 
-def process_all_files(uploaded_files):
+def process_all_files(uploaded_files, extra_mapping=None, extra_keywords=None):
     """Process all uploaded Excel files and return combined master dataframe."""
     all_rows = []
 
@@ -296,7 +298,7 @@ def process_all_files(uploaded_files):
                         engine="openpyxl"
                     )
                     data = df.values.tolist()
-                    rows = process_single_sheet(data, sheet_name, category)
+                    rows = process_single_sheet(data, sheet_name, category, extra_mapping=extra_mapping, extra_keywords=extra_keywords)
                     all_rows.extend(rows)
                 except Exception as e:
                     print(f"Warning: Could not process sheet {sheet_name}: {str(e)}")
