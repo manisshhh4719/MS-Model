@@ -67,7 +67,7 @@ if "edited_mapping_df" not in st.session_state:
 
 # ─── SECTION 1: INDIVIDUAL FACTOR ────────────────────────────────────────────
 factor_option = st.session_state.factor_option
-factor_label = f"Individual Factor — {'Using Default' if factor_option == 'Use Default (Editable)' else 'Using Uploaded File'}"
+factor_label = f"Individual Factor - {'Using Default' if factor_option == 'Use Default (Editable)' else 'Using Uploaded File'}"
 
 final_factor_dict = {}
 
@@ -131,7 +131,7 @@ st.divider()
 
 # ─── SECTION 2: BRAND MAPPING ─────────────────────────────────────────────────
 n_extra = len(st.session_state.extra_keywords) + len(st.session_state.extra_mapping)
-mapping_label = f"Brand Mapping — {n_extra} custom addition(s)" if n_extra > 0 else "Brand Mapping — Using Sagar's List"
+mapping_label = f"Brand Mapping - {n_extra} custom addition(s) - Default List 1" if n_extra > 0 else "Brand Mapping - Default List 1"
 
 with st.expander(mapping_label, expanded=False):
 
@@ -277,7 +277,7 @@ if uploaded_files:
                     unsafe_allow_html=True
                 )
 
-            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 1 of 3 — Cleaning and combining all files...</p>", unsafe_allow_html=True)
+            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 1 of 3 - Cleaning and combining all files...</p>", unsafe_allow_html=True)
             progress_bar.progress(5)
             try:
                 master_df = process_all_files(
@@ -286,27 +286,27 @@ if uploaded_files:
                     extra_keywords=st.session_state.extra_keywords
                 )
                 progress_bar.progress(40)
-                log(f"Step 1 complete — {len(master_df):,} rows extracted from {len(uploaded_files)} file(s)")
+                log(f"Step 1 complete - {len(master_df):,} rows extracted from {len(uploaded_files)} file(s)")
             except Exception as e:
                 st.error(f"Error in Step 1: {str(e)}")
                 st.stop()
 
-            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 2 of 3 — Running calculations...</p>", unsafe_allow_html=True)
+            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 2 of 3 - Running calculations...</p>", unsafe_allow_html=True)
             progress_bar.progress(45)
             try:
                 master_df = add_calculations(master_df, final_factor_dict)
                 progress_bar.progress(80)
-                log(f"Step 2 complete — {len(master_df):,} rows, {len(master_df.columns)} columns")
+                log(f"Step 2 complete - {len(master_df):,} rows, {len(master_df.columns)} columns")
             except Exception as e:
                 st.error(f"Error in Step 2: {str(e)}")
                 st.stop()
 
-            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 3 of 3 — Exporting to Excel...</p>", unsafe_allow_html=True)
+            status_area.markdown("<p style='font-weight:600; color:#1F4E79;'>Step 3 of 3 - Exporting to Excel...</p>", unsafe_allow_html=True)
             progress_bar.progress(85)
             try:
                 output = export_to_excel(master_df)
                 progress_bar.progress(100)
-                log("Step 3 complete — Excel file ready")
+                log("Step 3 complete - Excel file ready")
             except Exception as e:
                 st.error(f"Error in Step 3: {str(e)}")
                 st.stop()
