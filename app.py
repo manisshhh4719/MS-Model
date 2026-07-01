@@ -5,7 +5,7 @@ from io import BytesIO
 from cleaner import process_all_files
 from calculator import add_calculations, DEFAULT_INDIVIDUAL_FACTOR
 from exporter import export_to_excel
-from company_mapping import get_all_company_names, SAGAR_MAPPING, COMPANY_KEYWORDS
+from company_mapping import get_all_company_names, SAGAR_MAPPING, COMPANY_KEYWORDS, get_company_name
 
 st.set_page_config(
     page_title="Godrej Market Share Model",
@@ -47,21 +47,43 @@ st.markdown("<h1>Godrej Market Share Model</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#555; margin-top:-0.5rem;'>Automated pipeline to clean, combine, calculate and export market share data.</p>", unsafe_allow_html=True)
 st.divider()
 
+# ─── SESSION STATE INIT ───────────────────────────────────────────────────────
+if "extra_keywords" not in st.session_state:
+    st.session_state.extra_keywords = {}
+if "extra_mapping" not in st.session_state:
+    st.session_state.extra_mapping = {}
+if "factor_option" not in st.session_state:
+    st.session_state.factor_option = "Use Default (Editable)"
+if "edited_factor_df" not in st.session_state:
+    default_ur_only = {k: v for k, v in DEFAULT_INDIVIDUAL_FACTOR.items()
+                       if "(U)" in k or "(R)" in k or k in ["All India Urban", "All India Rural"]}
+    st.session_state.edited_factor_df = pd.DataFrame(
+        list(default_ur_only.items()), columns=["Region", "Individual Factor"]
+    )
+if "edited_mapping_df" not in st.session_state:
+    st.session_state.edited_mapping_df = pd.DataFrame(
+        list(SAGAR_MAPPING.items()), columns=["Brand_SKU_Item", "Brand"]
+    )
+
 # ─── SECTION 1: INDIVIDUAL FACTOR ────────────────────────────────────────────
-st.markdown("### Individual Factor")
+factor_option = st.session_state.factor_option
+factor_label = f"Individual Factor — {'Using Default' if factor_option == 'Use Default (Editable)' else 'Using Uploaded File'}"
+
 final_factor_dict = {}
 
-with st.expander("View / Edit Individual Factor", expanded=False):
+with st.expander(factor_label, expanded=False):
     factor_option = st.radio(
         "Choose how to provide Individual Factor values:",
         ["Use Default (Editable)", "Upload Individual Factor File"],
         horizontal=True,
-        key="factor_option"
+        key="factor_radio",
+        index=0 if st.session_state.factor_option == "Use Default (Editable)" else 1
     )
+    st.session_state.factor_option = factor_option
 
     if factor_option == "Upload Individual Factor File":
         factor_file = st.file_uploader(
-            "Upload CSV or Excel file. Any column names are fine. One column should have region names, other should have numeric values.",
+            "Upload CSV or Excel file. One column should have region names, other should have numeric values.",
             type=["csv", "xlsx", "xls"],
             key="factor_file"
         )
@@ -89,11 +111,11 @@ with st.expander("View / Edit Individual Factor", expanded=False):
                 st.error(f"Error reading file: {str(e)}")
     else:
         st.markdown("<p style='color:#555; font-size:0.9rem;'>Edit any value directly in the table. U+R values are calculated automatically.</p>", unsafe_allow_html=True)
-        default_ur_only = {k: v for k, v in DEFAULT_INDIVIDUAL_FACTOR.items()
-                           if "(U)" in k or "(R)" in k or k in ["All India Urban", "All India Rural"]}
-        default_df = pd.DataFrame(list(default_ur_only.items()), columns=["Region", "Individual Factor"])
         edited_df = st.data_editor(
-            default_df, use_container_width=True, num_rows="fixed", height=400,
+            st.session_state.edited_factor_df,
+            use_container_width=True,
+            num_rows="fixed",
+            height=400,
             key="factor_editor",
             column_config={
                 "Region": st.column_config.TextColumn("Region", disabled=True, width="large"),
@@ -102,74 +124,68 @@ with st.expander("View / Edit Individual Factor", expanded=False):
                 )
             }
         )
+        st.session_state.edited_factor_df = edited_df
         final_factor_dict = dict(zip(edited_df["Region"], edited_df["Individual Factor"]))
 
 st.divider()
 
-# ─── SECTION 2: COMPANY MAPPING ───────────────────────────────────────────────
-st.markdown("### Company Mapping")
+# ─── SECTION 2: BRAND MAPPING ─────────────────────────────────────────────────
+n_extra = len(st.session_state.extra_keywords) + len(st.session_state.extra_mapping)
+mapping_label = f"Brand Mapping — {n_extra} custom addition(s)" if n_extra > 0 else "Brand Mapping — Using Sagar's List"
 
-# Session state for extra mappings
-if "extra_keywords" not in st.session_state:
-    st.session_state.extra_keywords = {}
-if "extra_mapping" not in st.session_state:
-    st.session_state.extra_mapping = {}
+with st.expander(mapping_label, expanded=False):
 
-all_companies = get_all_company_names()
-
-with st.expander("View / Edit Company Mapping", expanded=False):
-
-    tab1, tab2, tab3 = st.tabs(["Current Mapping", "Add by Keyword", "Upload Item List"])
+    tab1, tab2, tab3 = st.tabs(["View / Edit Current Mapping", "Add by Keyword", "Upload Item List"])
 
     with tab1:
-        st.markdown("**Built-in mapping from Sagar's list** (Brand_SKU_Item → Company)")
-        mapping_df = pd.DataFrame(
-            list(SAGAR_MAPPING.items()),
-            columns=["Brand_SKU_Item", "Company"]
+        st.markdown("**Edit the Brand_SKU_Item → Brand mapping directly. Changes apply when pipeline runs.**")
+
+        edited_mapping = st.data_editor(
+            st.session_state.edited_mapping_df,
+            use_container_width=True,
+            height=400,
+            num_rows="dynamic",
+            key="mapping_editor",
+            column_config={
+                "Brand_SKU_Item": st.column_config.TextColumn("Brand_SKU_Item", width="large"),
+                "Brand": st.column_config.TextColumn("Brand", width="large"),
+            }
         )
-        st.dataframe(mapping_df, use_container_width=True, height=350)
+        st.session_state.edited_mapping_df = edited_mapping
+        # Update extra_mapping from edits
+        st.session_state.extra_mapping = dict(zip(edited_mapping["Brand_SKU_Item"], edited_mapping["Brand"]))
 
         if st.session_state.extra_keywords:
-            st.markdown("**Your added keywords:**")
+            st.markdown("**Added keyword mappings:**")
             kw_df = pd.DataFrame(
                 list(st.session_state.extra_keywords.items()),
-                columns=["Keyword", "Company"]
+                columns=["Keyword", "Brand"]
             )
             st.dataframe(kw_df, use_container_width=True)
 
-        if st.session_state.extra_mapping:
-            st.markdown("**Your uploaded item mappings:**")
-            em_df = pd.DataFrame(
-                list(st.session_state.extra_mapping.items()),
-                columns=["Brand_SKU_Item", "Company"]
-            )
-            st.dataframe(em_df, use_container_width=True)
-
     with tab2:
-        st.markdown("Add a new keyword → company mapping. If any Brand_SKU_Item contains this keyword, it gets assigned to that company.")
+        st.markdown("If any Brand_SKU_Item contains this keyword, it gets assigned to that brand.")
+        all_brands = get_all_company_names()
         col1, col2 = st.columns(2)
         with col1:
             new_keyword = st.text_input("Keyword (e.g. BBLUNT, STREAX)", key="new_keyword").strip().upper()
         with col2:
-            company_input = st.selectbox(
-                "Company name",
-                options=[""] + all_companies + ["Add new company..."],
-                key="keyword_company_select"
-            )
-            if company_input == "Add new company...":
-                company_input = st.text_input("Type new company name", key="new_company_name").strip()
+            brand_options = [""] + all_brands + ["Add new brand..."]
+            brand_select = st.selectbox("Brand name", options=brand_options, key="keyword_brand_select")
+            if brand_select == "Add new brand...":
+                brand_select = st.text_input("Type new brand name", key="new_brand_name").strip()
 
         if st.button("Add Keyword Mapping", key="add_keyword_btn"):
-            if new_keyword and company_input and company_input != "Add new company...":
-                st.session_state.extra_keywords[new_keyword] = company_input
-                st.success(f"Added: '{new_keyword}' → '{company_input}'")
+            if new_keyword and brand_select and brand_select not in ["", "Add new brand..."]:
+                st.session_state.extra_keywords[new_keyword] = brand_select
+                st.success(f"Added: '{new_keyword}' → '{brand_select}'")
             else:
-                st.warning("Please enter both a keyword and a company name.")
+                st.warning("Please enter both a keyword and a brand name.")
 
     with tab3:
-        st.markdown("Upload a file with Brand_SKU_Item names and their company names. Partial/fuzzy matching is used — no exact match required.")
+        st.markdown("Upload a CSV or Excel with two columns: Brand_SKU_Item name and Brand name. Fuzzy matching is used.")
         uploaded_mapping = st.file_uploader(
-            "Upload CSV or Excel (two columns: item name, company name)",
+            "Upload file",
             type=["csv", "xlsx", "xls"],
             key="mapping_upload"
         )
@@ -182,32 +198,41 @@ with st.expander("View / Edit Company Mapping", expanded=False):
 
                 str_cols = map_df.select_dtypes(include=["object"]).columns.tolist()
                 if len(str_cols) < 2:
-                    st.error("File must have at least 2 text columns: item name and company name.")
+                    st.error("File must have at least 2 text columns: item name and brand name.")
                 else:
                     item_col = str_cols[0]
-                    company_col = str_cols[1]
-                    st.success(f"Detected: Item column = '{item_col}' | Company column = '{company_col}'")
-                    map_df = map_df[[item_col, company_col]].dropna()
-                    st.dataframe(map_df.rename(columns={item_col: "Brand_SKU_Item", company_col: "Company"}),
-                                 use_container_width=True, height=250)
+                    brand_col = str_cols[1]
+                    st.success(f"Detected: Item column = '{item_col}' | Brand column = '{brand_col}'")
+                    map_df = map_df[[item_col, brand_col]].dropna()
+                    st.dataframe(
+                        map_df.rename(columns={item_col: "Brand_SKU_Item", brand_col: "Brand"}),
+                        use_container_width=True, height=250
+                    )
 
-                    # Auto-map new items using keyword matching if company column is empty
-                    from company_mapping import get_company_name
                     new_mappings = {}
                     for _, row in map_df.iterrows():
                         item = str(row[item_col]).strip()
-                        company = str(row[company_col]).strip()
-                        if company and company.lower() not in ["nan", "none", ""]:
-                            new_mappings[item] = company
+                        brand = str(row[brand_col]).strip()
+                        if brand and brand.lower() not in ["nan", "none", ""]:
+                            new_mappings[item] = brand
                         else:
-                            # Try keyword matching for items with no company
-                            auto_company = get_company_name(item)
-                            if auto_company != "Others / Unmapped":
-                                new_mappings[item] = auto_company
+                            auto_brand = get_company_name(item)
+                            if auto_brand != "Others / Unmapped":
+                                new_mappings[item] = auto_brand
 
                     if st.button("Apply This Mapping", key="apply_mapping_btn"):
                         st.session_state.extra_mapping.update(new_mappings)
-                        st.success(f"Applied {len(new_mappings)} item mappings.")
+                        # Also update the editable table
+                        current_df = st.session_state.edited_mapping_df
+                        new_rows = pd.DataFrame(
+                            [(k, v) for k, v in new_mappings.items()
+                             if k not in current_df["Brand_SKU_Item"].values],
+                            columns=["Brand_SKU_Item", "Brand"]
+                        )
+                        st.session_state.edited_mapping_df = pd.concat(
+                            [current_df, new_rows], ignore_index=True
+                        )
+                        st.success(f"Applied {len(new_mappings)} brand mappings.")
 
             except Exception as e:
                 st.error(f"Error reading file: {str(e)}")
